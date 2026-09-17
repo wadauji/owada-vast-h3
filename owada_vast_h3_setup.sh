@@ -2,8 +2,14 @@
 set -Eeuo pipefail
 
 # ============================================================
-# Owada Vast H3 Setup v2.0
+# Owada Vast H3 Setup v2.1
 # Vast.ai + RTX 5090 + ComfyUI + MiniMax H3 Ref2VA Turbo
+#
+# v2.1:
+#   - Vast provisioning-safe /venv PATH
+#   - Automatic AWS CLI installation
+#   - RunPod S3 workflow restore
+#   - S3 failure does not break core H3 setup
 # ============================================================
 
 START_TIME=$(date +%s)
@@ -15,7 +21,6 @@ COMFY_DIR="${COMFY_DIR:-/workspace/ComfyUI}"
 
 MODEL_REPO="Comfy-Org/MiniMax-H3"
 TURBO_REPO="lightx2v/Minimax-h3-Turbo"
-
 WORKFLOW_BASE="https://raw.githubusercontent.com/ModelTC/Minimax-H3-Turbo/main"
 
 DIFFUSION_FILE="minimax_h3_ref2va_pruned_int8_convrot.safetensors"
@@ -59,12 +64,12 @@ trap 'echo; echo "[ERROR] Setup failed at line ${LINENO}."; exit 1' ERR
 
 echo
 echo "============================================================"
-echo " Owada Vast H3 Setup v2.0"
+echo " Owada Vast H3 Setup v2.1"
 echo "============================================================"
 echo
 
 # ------------------------------------------------------------
-# Wait for Vast/ComfyUI provisioning
+# Wait for ComfyUI
 # ------------------------------------------------------------
 
 log "Waiting for ComfyUI directory..."
@@ -146,7 +151,7 @@ curl -fsSIL \
 ok "GitHub reachable."
 
 # ------------------------------------------------------------
-# HF CLI
+# Hugging Face CLI
 # ------------------------------------------------------------
 
 log "Checking Hugging Face CLI..."
@@ -178,7 +183,7 @@ mkdir -p \
     "${WORKFLOW_DIR}"
 
 # ------------------------------------------------------------
-# Download helper
+# Hugging Face download helper
 # ------------------------------------------------------------
 
 hf_download_file() {
@@ -234,7 +239,7 @@ hf_download_file() {
 }
 
 # ------------------------------------------------------------
-# Models
+# MiniMax H3 models
 # ------------------------------------------------------------
 
 hf_download_file \
@@ -263,10 +268,10 @@ hf_download_file \
     "${LORA_DIR}"
 
 # ------------------------------------------------------------
-# Workflow
+# Official fallback workflow
 # ------------------------------------------------------------
 
-log "Installing Ref2VA workflow..."
+log "Installing official Ref2VA workflow..."
 
 if [[ ! -s "${WORKFLOW_DIR}/${WORKFLOW_FILE}" ]]; then
     curl -fL \
@@ -280,13 +285,71 @@ fi
 [[ -s "${WORKFLOW_DIR}/${WORKFLOW_FILE}" ]] || \
     die "Workflow installation failed."
 
-ok "Workflow installed."
+ok "Official workflow installed."
 
 # ------------------------------------------------------------
-# Validate
+# RunPod S3 workflow restore
 # ------------------------------------------------------------
 
-log "Validating..."
+log "Checking RunPod S3 workflow storage..."
+
+S3_READY=1
+
+REQUIRED_S3_VARS=(
+    AWS_ACCESS_KEY_ID
+    AWS_SECRET_ACCESS_KEY
+    AWS_DEFAULT_REGION
+    RUNPOD_S3_ENDPOINT
+    RUNPOD_S3_BUCKET
+)
+
+for var in "${REQUIRED_S3_VARS[@]}"; do
+    if [[ -z "${!var:-}" ]]; then
+        warn "${var} is not set."
+        S3_READY=0
+    fi
+done
+
+if (( S3_READY == 1 )); then
+
+    log "Checking AWS CLI..."
+
+    if ! command -v aws >/dev/null 2>&1; then
+        /venv/main/bin/python -m pip install awscli
+    fi
+
+    if command -v aws >/dev/null 2>&1; then
+        ok "AWS CLI available."
+
+        log "Restoring workflows from RunPod S3..."
+
+        if aws s3 sync \
+            "s3://${RUNPOD_S3_BUCKET}/vast/workflows/" \
+            "${WORKFLOW_DIR}/" \
+            --endpoint-url "${RUNPOD_S3_ENDPOINT}" \
+            --region "${AWS_DEFAULT_REGION}"
+        then
+            ok "RunPod S3 workflows restored."
+        else
+            warn "RunPod S3 workflow sync failed."
+            warn "Core H3 setup will continue."
+        fi
+
+    else
+        warn "AWS CLI installation failed."
+        warn "Skipping RunPod S3 workflow restore."
+    fi
+
+else
+    warn "RunPod S3 configuration incomplete."
+    warn "Skipping private workflow restore."
+fi
+
+# ------------------------------------------------------------
+# Validate core H3 installation
+# ------------------------------------------------------------
+
+log "Validating core H3 installation..."
 
 REQUIRED_FILES=(
     "${DIFFUSION_DIR}/${DIFFUSION_FILE}"
@@ -302,6 +365,10 @@ for file in "${REQUIRED_FILES[@]}"; do
     echo "[OK] $(du -h "${file}" | cut -f1)  ${file}"
 done
 
+# ------------------------------------------------------------
+# Final status
+# ------------------------------------------------------------
+
 END_TIME=$(date +%s)
 TOTAL_TIME=$((END_TIME - START_TIME))
 
@@ -314,8 +381,9 @@ echo "GPU: ${GPU_NAME}"
 echo "Setup time: ${TOTAL_TIME} seconds"
 echo "Setup time: $((TOTAL_TIME / 60))m $((TOTAL_TIME % 60))s"
 echo
-echo "Workflow:"
-echo "  ${WORKFLOW_DIR}/${WORKFLOW_FILE}"
+echo "Workflows:"
+find "${WORKFLOW_DIR}" -maxdepth 1 -type f -name '*.json' \
+    -printf '  %f\n' 2>/dev/null || true
 echo
 echo "Disk:"
 df -h /workspace
