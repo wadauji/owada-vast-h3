@@ -2,19 +2,22 @@
 set -Eeuo pipefail
 
 # ============================================================
-# Owada Vast H3 Setup v2.1
+# Owada Vast H3 Setup v2.2
 # Vast.ai + RTX 5090 + ComfyUI + MiniMax H3 Ref2VA Turbo
 #
-# v2.1:
+# v2.2:
 #   - Vast provisioning-safe /venv PATH
-#   - Automatic AWS CLI installation
+#   - MiniMax H3 Ref2VA automatic setup
 #   - RunPod S3 workflow restore
+#   - Automatic MP4 uploader to RunPod S3
+#   - Individual "aws s3 cp" uploads (no ListObjectsV2 required)
+#   - Existing models are skipped
 #   - S3 failure does not break core H3 setup
 # ============================================================
 
 START_TIME=$(date +%s)
 
-# Vast provisioning runs before the interactive shell activates /venv/main.
+# Vast On-start runs before the interactive shell activates /venv/main.
 export PATH="/venv/main/bin:${PATH}"
 
 COMFY_DIR="${COMFY_DIR:-/workspace/ComfyUI}"
@@ -37,6 +40,12 @@ TEXT_ENCODER_DIR="${COMFY_DIR}/models/text_encoders"
 VAE_DIR="${COMFY_DIR}/models/vae"
 LORA_DIR="${COMFY_DIR}/models/loras"
 WORKFLOW_DIR="${COMFY_DIR}/user/default/workflows"
+OUTPUT_DIR="${COMFY_DIR}/output"
+
+UPLOADER_SCRIPT="/workspace/owada_s3_output_uploader.sh"
+UPLOADER_LOG="/workspace/owada_s3_output_uploader.log"
+UPLOADER_PID="/workspace/owada_s3_output_uploader.pid"
+UPLOADER_STATE="/workspace/.owada_s3_uploaded"
 
 timestamp() {
     date '+%Y-%m-%d %H:%M:%S'
@@ -64,12 +73,12 @@ trap 'echo; echo "[ERROR] Setup failed at line ${LINENO}."; exit 1' ERR
 
 echo
 echo "============================================================"
-echo " Owada Vast H3 Setup v2.1"
+echo " Owada Vast H3 Setup v2.2"
 echo "============================================================"
 echo
 
 # ------------------------------------------------------------
-# Wait for ComfyUI
+# 1. Wait for ComfyUI
 # ------------------------------------------------------------
 
 log "Waiting for ComfyUI directory..."
@@ -87,7 +96,7 @@ done
 ok "ComfyUI found: ${COMFY_DIR}"
 
 # ------------------------------------------------------------
-# GPU
+# 2. GPU
 # ------------------------------------------------------------
 
 log "Checking GPU..."
@@ -108,7 +117,7 @@ fi
 nvidia-smi || true
 
 # ------------------------------------------------------------
-# Disk
+# 3. Disk
 # ------------------------------------------------------------
 
 log "Checking disk..."
@@ -125,7 +134,7 @@ fi
 ok "Disk capacity OK."
 
 # ------------------------------------------------------------
-# Network
+# 4. Network
 # ------------------------------------------------------------
 
 log "Checking Hugging Face..."
@@ -151,7 +160,7 @@ curl -fsSIL \
 ok "GitHub reachable."
 
 # ------------------------------------------------------------
-# Hugging Face CLI
+# 5. Hugging Face CLI
 # ------------------------------------------------------------
 
 log "Checking Hugging Face CLI..."
@@ -172,7 +181,7 @@ else
 fi
 
 # ------------------------------------------------------------
-# Directories
+# 6. Directories
 # ------------------------------------------------------------
 
 mkdir -p \
@@ -180,10 +189,11 @@ mkdir -p \
     "${TEXT_ENCODER_DIR}" \
     "${VAE_DIR}" \
     "${LORA_DIR}" \
-    "${WORKFLOW_DIR}"
+    "${WORKFLOW_DIR}" \
+    "${OUTPUT_DIR}"
 
 # ------------------------------------------------------------
-# Hugging Face download helper
+# 7. Hugging Face download helper
 # ------------------------------------------------------------
 
 hf_download_file() {
@@ -239,7 +249,7 @@ hf_download_file() {
 }
 
 # ------------------------------------------------------------
-# MiniMax H3 models
+# 8. MiniMax H3 models
 # ------------------------------------------------------------
 
 hf_download_file \
@@ -268,7 +278,7 @@ hf_download_file \
     "${LORA_DIR}"
 
 # ------------------------------------------------------------
-# Official fallback workflow
+# 9. Official fallback workflow
 # ------------------------------------------------------------
 
 log "Installing official Ref2VA workflow..."
@@ -288,10 +298,10 @@ fi
 ok "Official workflow installed."
 
 # ------------------------------------------------------------
-# RunPod S3 workflow restore
+# 10. RunPod S3 configuration
 # ------------------------------------------------------------
 
-log "Checking RunPod S3 workflow storage..."
+log "Checking RunPod S3 configuration..."
 
 S3_READY=1
 
@@ -310,6 +320,10 @@ for var in "${REQUIRED_S3_VARS[@]}"; do
     fi
 done
 
+# ------------------------------------------------------------
+# 11. AWS CLI
+# ------------------------------------------------------------
+
 if (( S3_READY == 1 )); then
 
     log "Checking AWS CLI..."
@@ -320,33 +334,41 @@ if (( S3_READY == 1 )); then
 
     if command -v aws >/dev/null 2>&1; then
         ok "AWS CLI available."
-
-        log "Restoring workflows from RunPod S3..."
-
-        if aws s3 sync \
-            "s3://${RUNPOD_S3_BUCKET}/vast/workflows/" \
-            "${WORKFLOW_DIR}/" \
-            --endpoint-url "${RUNPOD_S3_ENDPOINT}" \
-            --region "${AWS_DEFAULT_REGION}"
-        then
-            ok "RunPod S3 workflows restored."
-        else
-            warn "RunPod S3 workflow sync failed."
-            warn "Core H3 setup will continue."
-        fi
-
     else
         warn "AWS CLI installation failed."
-        warn "Skipping RunPod S3 workflow restore."
+        S3_READY=0
     fi
 
 else
     warn "RunPod S3 configuration incomplete."
-    warn "Skipping private workflow restore."
 fi
 
 # ------------------------------------------------------------
-# Validate core H3 installation
+# 12. Restore workflows from RunPod S3
+# ------------------------------------------------------------
+
+if (( S3_READY == 1 )); then
+
+    log "Restoring workflows from RunPod S3..."
+
+    if aws s3 sync \
+        "s3://${RUNPOD_S3_BUCKET}/vast/workflows/" \
+        "${WORKFLOW_DIR}/" \
+        --endpoint-url "${RUNPOD_S3_ENDPOINT}" \
+        --region "${AWS_DEFAULT_REGION}"
+    then
+        ok "RunPod S3 workflows restored."
+    else
+        warn "RunPod S3 workflow sync failed."
+        warn "Core H3 setup will continue."
+    fi
+
+else
+    warn "Skipping RunPod S3 workflow restore."
+fi
+
+# ------------------------------------------------------------
+# 13. Validate core H3 installation
 # ------------------------------------------------------------
 
 log "Validating core H3 installation..."
@@ -366,7 +388,124 @@ for file in "${REQUIRED_FILES[@]}"; do
 done
 
 # ------------------------------------------------------------
-# Final status
+# 14. Create automatic MP4 uploader
+# ------------------------------------------------------------
+
+if (( S3_READY == 1 )); then
+
+    log "Creating automatic MP4 uploader..."
+
+    cat > "${UPLOADER_SCRIPT}" <<'UPLOADER_EOF'
+#!/usr/bin/env bash
+set -u
+
+SOURCE_DIR="/workspace/ComfyUI/output"
+DEST_PREFIX="s3://${RUNPOD_S3_BUCKET}/ComfyUI/output"
+STATE_DIR="/workspace/.owada_s3_uploaded"
+INTERVAL=5
+
+mkdir -p "${SOURCE_DIR}" "${STATE_DIR}"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+log "Owada Vast -> RunPod S3 uploader started"
+log "Source: ${SOURCE_DIR}"
+log "Dest:   ${DEST_PREFIX}"
+log "Mode:   individual aws s3 cp"
+log "Interval: ${INTERVAL}s"
+
+while true; do
+
+    while IFS= read -r -d '' file; do
+
+        filename="$(basename "${file}")"
+        marker="${STATE_DIR}/${filename}.done"
+
+        # Already uploaded during this Vast instance.
+        [[ -f "${marker}" ]] && continue
+
+        # Do not upload an MP4 while ComfyUI may still be writing it.
+        now=$(date +%s)
+        mtime=$(stat -c %Y "${file}" 2>/dev/null || echo "${now}")
+        age=$((now - mtime))
+
+        (( age >= 5 )) || continue
+
+        log "Uploading: ${filename}"
+
+        if aws s3 cp \
+            "${file}" \
+            "${DEST_PREFIX}/${filename}" \
+            --endpoint-url "${RUNPOD_S3_ENDPOINT}" \
+            --region "${AWS_DEFAULT_REGION}" \
+            --only-show-errors
+        then
+            touch "${marker}"
+            log "Uploaded: ${filename}"
+        else
+            log "WARN: Upload failed: ${filename}"
+        fi
+
+    done < <(
+        find "${SOURCE_DIR}" \
+            -type f \
+            -iname '*.mp4' \
+            -print0 2>/dev/null
+    )
+
+    sleep "${INTERVAL}"
+done
+UPLOADER_EOF
+
+    chmod +x "${UPLOADER_SCRIPT}"
+
+    ok "Automatic MP4 uploader created."
+
+    # --------------------------------------------------------
+    # Stop an old uploader if setup.sh is executed again
+    # --------------------------------------------------------
+
+    if [[ -f "${UPLOADER_PID}" ]]; then
+
+        OLD_PID="$(cat "${UPLOADER_PID}" 2>/dev/null || true)"
+
+        if [[ -n "${OLD_PID}" ]] && kill -0 "${OLD_PID}" 2>/dev/null; then
+            log "Stopping previous MP4 uploader (PID ${OLD_PID})..."
+            kill "${OLD_PID}" 2>/dev/null || true
+            sleep 1
+        fi
+
+    fi
+
+    # --------------------------------------------------------
+    # Start uploader
+    # --------------------------------------------------------
+
+    log "Starting automatic MP4 uploader..."
+
+    nohup "${UPLOADER_SCRIPT}" \
+        > "${UPLOADER_LOG}" 2>&1 &
+
+    NEW_PID=$!
+
+    echo "${NEW_PID}" > "${UPLOADER_PID}"
+
+    sleep 1
+
+    if kill -0 "${NEW_PID}" 2>/dev/null; then
+        ok "MP4 uploader running. PID: ${NEW_PID}"
+    else
+        warn "MP4 uploader failed to start."
+    fi
+
+else
+    warn "Skipping automatic MP4 uploader."
+fi
+
+# ------------------------------------------------------------
+# 15. Final status
 # ------------------------------------------------------------
 
 END_TIME=$(date +%s)
@@ -377,15 +516,34 @@ echo "============================================================"
 echo " H3 REF2VA READY"
 echo "============================================================"
 echo
-echo "GPU: ${GPU_NAME}"
-echo "Setup time: ${TOTAL_TIME} seconds"
-echo "Setup time: $((TOTAL_TIME / 60))m $((TOTAL_TIME % 60))s"
+echo "GPU:"
+echo "  ${GPU_NAME}"
+echo
+echo "Setup time:"
+echo "  ${TOTAL_TIME} seconds"
+echo "  $((TOTAL_TIME / 60))m $((TOTAL_TIME % 60))s"
 echo
 echo "Workflows:"
-find "${WORKFLOW_DIR}" -maxdepth 1 -type f -name '*.json' \
+find "${WORKFLOW_DIR}" \
+    -maxdepth 1 \
+    -type f \
+    -name '*.json' \
     -printf '  %f\n' 2>/dev/null || true
+
+if (( S3_READY == 1 )); then
+    echo
+    echo "RunPod S3:"
+    echo "  Workflow restore : ENABLED"
+    echo "  MP4 auto upload  : ENABLED"
+    echo "  Output target    : s3://${RUNPOD_S3_BUCKET}/ComfyUI/output/"
+    echo
+    echo "Uploader log:"
+    echo "  ${UPLOADER_LOG}"
+fi
+
 echo
 echo "Disk:"
 df -h /workspace
+
 echo
 echo "============================================================"
