@@ -8,6 +8,9 @@ set -Eeuo pipefail
 
 START_TIME=$(date +%s)
 
+# Vast provisioning runs before the interactive shell activates /venv/main.
+export PATH="/venv/main/bin:${PATH}"
+
 COMFY_DIR="${COMFY_DIR:-/workspace/ComfyUI}"
 
 MODEL_REPO="Comfy-Org/MiniMax-H3"
@@ -149,7 +152,7 @@ ok "GitHub reachable."
 log "Checking Hugging Face CLI..."
 
 if ! command -v hf >/dev/null 2>&1; then
-    python -m pip install -U "huggingface_hub[cli]"
+    /venv/main/bin/python -m pip install -U "huggingface_hub[cli]"
 fi
 
 command -v hf >/dev/null 2>&1 || \
