@@ -2,14 +2,16 @@
 set -Eeuo pipefail
 
 # ============================================================
-# Owada Vast H3 Setup v2.2
+# Owada Vast H3 Setup v2.2.1
 # Vast.ai + RTX 5090 + ComfyUI + MiniMax H3 Ref2VA Turbo
 #
-# v2.2:
+# v2.2.1:
 #   - Vast provisioning-safe /venv PATH
 #   - MiniMax H3 Ref2VA automatic setup
 #   - RunPod S3 workflow restore
 #   - Automatic MP4 uploader to RunPod S3
+#   - Upload to ComfyUI/output/video/
+#   - Add "-audio" suffix for existing MP4 Downloader compatibility
 #   - Individual "aws s3 cp" uploads (no ListObjectsV2 required)
 #   - Existing models are skipped
 #   - S3 failure does not break core H3 setup
@@ -73,7 +75,7 @@ trap 'echo; echo "[ERROR] Setup failed at line ${LINENO}."; exit 1' ERR
 
 echo
 echo "============================================================"
-echo " Owada Vast H3 Setup v2.2"
+echo " Owada Vast H3 Setup v2.2.1"
 echo "============================================================"
 echo
 
@@ -344,7 +346,7 @@ else
 fi
 
 # ------------------------------------------------------------
-# 12. Restore workflows from RunPod S3
+# 12. Restore Vast workflows from RunPod S3
 # ------------------------------------------------------------
 
 if (( S3_READY == 1 )); then
@@ -400,7 +402,10 @@ if (( S3_READY == 1 )); then
 set -u
 
 SOURCE_DIR="/workspace/ComfyUI/output"
+
+# Existing Windows downloader watches this exact S3 path.
 DEST_PREFIX="s3://${RUNPOD_S3_BUCKET}/ComfyUI/output/video"
+
 STATE_DIR="/workspace/.owada_s3_uploaded"
 INTERVAL=5
 
@@ -421,7 +426,12 @@ while true; do
     while IFS= read -r -d '' file; do
 
         filename="$(basename "${file}")"
+
+        # The existing Windows downloader only downloads *-audio.mp4.
+        # Vast's H3 workflow produces a normal .mp4, so only the S3
+        # object name gets the -audio suffix.
         s3_filename="${filename%.mp4}-audio.mp4"
+
         marker="${STATE_DIR}/${filename}.done"
 
         # Already uploaded during this Vast instance.
@@ -434,17 +444,17 @@ while true; do
 
         (( age >= 5 )) || continue
 
-        log "Uploading: ${filename}"
+        log "Uploading: ${filename} -> ${s3_filename}"
 
         if aws s3 cp \
             "${file}" \
-            "${DEST_PREFIX}/${s3_filename}"
+            "${DEST_PREFIX}/${s3_filename}" \
             --endpoint-url "${RUNPOD_S3_ENDPOINT}" \
             --region "${AWS_DEFAULT_REGION}" \
             --only-show-errors
         then
             touch "${marker}"
-            log "Uploaded: ${filename}"
+            log "Uploaded: ${s3_filename}"
         else
             log "WARN: Upload failed: ${filename}"
         fi
@@ -536,7 +546,7 @@ if (( S3_READY == 1 )); then
     echo "RunPod S3:"
     echo "  Workflow restore : ENABLED"
     echo "  MP4 auto upload  : ENABLED"
-    echo "  Output target    : s3://${RUNPOD_S3_BUCKET}/ComfyUI/output/"
+    echo "  Output target    : s3://${RUNPOD_S3_BUCKET}/ComfyUI/output/video/"
     echo
     echo "Uploader log:"
     echo "  ${UPLOADER_LOG}"
