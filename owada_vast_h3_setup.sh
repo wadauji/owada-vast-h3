@@ -400,7 +400,7 @@ if (( S3_READY == 1 )); then
 set -u
 
 SOURCE_DIR="/workspace/ComfyUI/output"
-DEST_PREFIX="s3://${RUNPOD_S3_BUCKET}/ComfyUI/output"
+DEST_PREFIX="s3://${RUNPOD_S3_BUCKET}/ComfyUI/output/video"
 STATE_DIR="/workspace/.owada_s3_uploaded"
 INTERVAL=5
 
@@ -421,6 +421,7 @@ while true; do
     while IFS= read -r -d '' file; do
 
         filename="$(basename "${file}")"
+        s3_filename="${filename%.mp4}-audio.mp4"
         marker="${STATE_DIR}/${filename}.done"
 
         # Already uploaded during this Vast instance.
@@ -437,7 +438,7 @@ while true; do
 
         if aws s3 cp \
             "${file}" \
-            "${DEST_PREFIX}/${filename}" \
+            "${DEST_PREFIX}/${s3_filename}"
             --endpoint-url "${RUNPOD_S3_ENDPOINT}" \
             --region "${AWS_DEFAULT_REGION}" \
             --only-show-errors
