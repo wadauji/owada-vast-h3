@@ -2,17 +2,19 @@
 set -Eeuo pipefail
 
 # ============================================================
-# Owada Vast H3 Setup v2.2.1
+# Owada Vast H3 Setup v2.3
 # Vast.ai + RTX 5090 + ComfyUI + MiniMax H3 Ref2VA Turbo
 #
-# v2.2.1:
+# v2.3:
 #   - Vast provisioning-safe /venv PATH
 #   - MiniMax H3 Ref2VA automatic setup
+#   - 4-step Turbo LoRA
+#   - 8-step Turbo LoRA
 #   - RunPod S3 workflow restore
 #   - Automatic MP4 uploader to RunPod S3
 #   - Upload to ComfyUI/output/video/
 #   - Add "-audio" suffix for existing MP4 Downloader compatibility
-#   - Individual "aws s3 cp" uploads (no ListObjectsV2 required)
+#   - Individual "aws s3 cp" uploads
 #   - Existing models are skipped
 #   - S3 failure does not break core H3 setup
 # ============================================================
@@ -32,7 +34,9 @@ DIFFUSION_FILE="minimax_h3_ref2va_pruned_int8_convrot.safetensors"
 TEXT_ENCODER_FILE="qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
 VIDEO_VAE_FILE="minimax_h3_video_vae_fp16.safetensors"
 AUDIO_VAE_FILE="minimax_h3_audio_vae_fp32.safetensors"
-LORA_FILE="minimax_h3_ref2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors"
+
+LORA_4STEP_FILE="minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors"
+LORA_8STEP_FILE="minimax_h3_ref2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors"
 
 WORKFLOW_FILE="video_minimax_h3_ref2v_lightx2v_turbo.json"
 WORKFLOW_URL="${WORKFLOW_BASE}/example_workflows/${WORKFLOW_FILE}"
@@ -75,7 +79,7 @@ trap 'echo; echo "[ERROR] Setup failed at line ${LINENO}."; exit 1' ERR
 
 echo
 echo "============================================================"
-echo " Owada Vast H3 Setup v2.2.1"
+echo " Owada Vast H3 Setup v2.3"
 echo "============================================================"
 echo
 
@@ -274,13 +278,26 @@ hf_download_file \
     "vae/${AUDIO_VAE_FILE}" \
     "${VAE_DIR}"
 
+# ------------------------------------------------------------
+# 9. Turbo LoRAs
+# ------------------------------------------------------------
+
+log "Installing MiniMax H3 Turbo LoRAs..."
+
 hf_download_file \
     "${TURBO_REPO}" \
-    "${LORA_FILE}" \
+    "${LORA_4STEP_FILE}" \
     "${LORA_DIR}"
 
+hf_download_file \
+    "${TURBO_REPO}" \
+    "${LORA_8STEP_FILE}" \
+    "${LORA_DIR}"
+
+ok "4-step and 8-step Turbo LoRAs available."
+
 # ------------------------------------------------------------
-# 9. Official fallback workflow
+# 10. Official fallback workflow
 # ------------------------------------------------------------
 
 log "Installing official Ref2VA workflow..."
@@ -300,7 +317,7 @@ fi
 ok "Official workflow installed."
 
 # ------------------------------------------------------------
-# 10. RunPod S3 configuration
+# 11. RunPod S3 configuration
 # ------------------------------------------------------------
 
 log "Checking RunPod S3 configuration..."
@@ -323,7 +340,7 @@ for var in "${REQUIRED_S3_VARS[@]}"; do
 done
 
 # ------------------------------------------------------------
-# 11. AWS CLI
+# 12. AWS CLI
 # ------------------------------------------------------------
 
 if (( S3_READY == 1 )); then
@@ -346,7 +363,7 @@ else
 fi
 
 # ------------------------------------------------------------
-# 12. Restore Vast workflows from RunPod S3
+# 13. Restore Vast workflows from RunPod S3
 # ------------------------------------------------------------
 
 if (( S3_READY == 1 )); then
@@ -370,7 +387,7 @@ else
 fi
 
 # ------------------------------------------------------------
-# 13. Validate core H3 installation
+# 14. Validate core H3 installation
 # ------------------------------------------------------------
 
 log "Validating core H3 installation..."
@@ -380,7 +397,8 @@ REQUIRED_FILES=(
     "${TEXT_ENCODER_DIR}/${TEXT_ENCODER_FILE}"
     "${VAE_DIR}/${VIDEO_VAE_FILE}"
     "${VAE_DIR}/${AUDIO_VAE_FILE}"
-    "${LORA_DIR}/${LORA_FILE}"
+    "${LORA_DIR}/${LORA_4STEP_FILE}"
+    "${LORA_DIR}/${LORA_8STEP_FILE}"
     "${WORKFLOW_DIR}/${WORKFLOW_FILE}"
 )
 
@@ -390,7 +408,7 @@ for file in "${REQUIRED_FILES[@]}"; do
 done
 
 # ------------------------------------------------------------
-# 14. Create automatic MP4 uploader
+# 15. Create automatic MP4 uploader
 # ------------------------------------------------------------
 
 if (( S3_READY == 1 )); then
@@ -427,9 +445,9 @@ while true; do
 
         filename="$(basename "${file}")"
 
-        # The existing Windows downloader only downloads *-audio.mp4.
-        # Vast's H3 workflow produces a normal .mp4, so only the S3
-        # object name gets the -audio suffix.
+        # Existing Windows downloader downloads *-audio.mp4.
+        # Keep the local Vast filename untouched and only change
+        # the S3 object name.
         s3_filename="${filename%.mp4}-audio.mp4"
 
         marker="${STATE_DIR}/${filename}.done"
@@ -437,7 +455,7 @@ while true; do
         # Already uploaded during this Vast instance.
         [[ -f "${marker}" ]] && continue
 
-        # Do not upload an MP4 while ComfyUI may still be writing it.
+        # Avoid uploading while ComfyUI may still be writing.
         now=$(date +%s)
         mtime=$(stat -c %Y "${file}" 2>/dev/null || echo "${now}")
         age=$((now - mtime))
@@ -467,6 +485,7 @@ while true; do
     )
 
     sleep "${INTERVAL}"
+
 done
 UPLOADER_EOF
 
@@ -475,7 +494,7 @@ UPLOADER_EOF
     ok "Automatic MP4 uploader created."
 
     # --------------------------------------------------------
-    # Stop an old uploader if setup.sh is executed again
+    # Stop previous uploader if setup is run again
     # --------------------------------------------------------
 
     if [[ -f "${UPLOADER_PID}" ]]; then
@@ -516,7 +535,7 @@ else
 fi
 
 # ------------------------------------------------------------
-# 15. Final status
+# 16. Final status
 # ------------------------------------------------------------
 
 END_TIME=$(date +%s)
@@ -533,6 +552,16 @@ echo
 echo "Setup time:"
 echo "  ${TOTAL_TIME} seconds"
 echo "  $((TOTAL_TIME / 60))m $((TOTAL_TIME % 60))s"
+echo
+echo "Models:"
+echo "  Diffusion : ${DIFFUSION_FILE}"
+echo "  Text      : ${TEXT_ENCODER_FILE}"
+echo "  Video VAE : ${VIDEO_VAE_FILE}"
+echo "  Audio VAE : ${AUDIO_VAE_FILE}"
+echo
+echo "Turbo LoRAs:"
+echo "  4-step : ${LORA_4STEP_FILE}"
+echo "  8-step : ${LORA_8STEP_FILE}"
 echo
 echo "Workflows:"
 find "${WORKFLOW_DIR}" \
