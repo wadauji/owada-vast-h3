@@ -32,7 +32,7 @@ DIFFUSION_FILE="minimax_h3_ref2va_pruned_int8_convrot.safetensors"
 TEXT_ENCODER_FILE="qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
 VIDEO_VAE_FILE="minimax_h3_video_vae_fp16.safetensors"
 AUDIO_VAE_FILE="minimax_h3_audio_vae_fp32.safetensors"
-LORA_FILE="minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors"
+LORA_FILE="minimax_h3_ref2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors"
 
 WORKFLOW_FILE="video_minimax_h3_ref2v_lightx2v_turbo.json"
 WORKFLOW_URL="${WORKFLOW_BASE}/example_workflows/${WORKFLOW_FILE}"
